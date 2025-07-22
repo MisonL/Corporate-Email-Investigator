@@ -10,39 +10,37 @@ import sys
 import time
 import logging
 
-# --- 全局配置 ---
-EXCEL_FILE = 'data.xlsx'  # 要处理的 Excel 文件名
-SHEET_NAME = 'Sheet1'  # Excel 文件中的工作表名称
-COMPANY_NAME_EN_COL = 'company_name'  # 公司英文名所在的列名
-COMPANY_NAME_TC_COL = 'company_name_tc'  # 公司中文名所在的列名
-EMAIL_COL = 'Email'  # 用于保存邮箱地址的列名
-LOG_FILE = 'not_found_log.log'  # 用于记录未找到邮箱的公司和最终汇总的日志文件名
-GEMINI_MODEL = 'gemini-2.5-flash'  # 指定使用的 Gemini 模型
+# --- 自定义异常 ---
+class QuotaExceededError(Exception):
+    """当检测到API配额用尽时抛出此异常"""
+    pass
 
-# --- 日志系统配置 ---
-# 创建一个名为 'console_logger' 的记录器，用于在控制台输出所有实时信息
+# --- 配置 ---
+EXCEL_FILE = 'data.xlsx'
+SHEET_NAME = 'Sheet1'
+COMPANY_NAME_EN_COL = 'company_name'
+COMPANY_NAME_TC_COL = 'company_name_tc'
+EMAIL_COL = 'Email'
+LOG_FILE = 'not_found_log.log'
+GEMINI_MODEL = 'gemini-2.5-flash'
+RETRY_INTERVAL_MINUTES = 30  # 配额错误重试间隔（分钟）
+
+# --- 日志配置 ---
 console_logger = logging.getLogger('console_logger')
-# 防止在某些环境中重复添加 handler
 if not console_logger.handlers:
-    console_logger.setLevel(logging.INFO)  # 设置日志级别为 INFO
-    console_handler = logging.StreamHandler()  # 创建一个流处理器，输出到控制台
-    # 设置控制台日志的格式
+    console_logger.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    console_logger.addHandler(console_handler)  # 将处理器添加到记录器
+    console_logger.addHandler(console_handler)
 
-# 创建一个名为 'file_logger' 的记录器，用于将指定信息保存到文件
 file_logger = logging.getLogger('file_logger')
-# 防止在某些环境中重复添加 handler
 if not file_logger.handlers:
-    file_logger.setLevel(logging.INFO)  # 设置日志级别为 INFO
-    # 创建一个文件处理器，'w' 模式表示每次运行都覆盖旧文件
+    file_logger.setLevel(logging.INFO)
     file_handler = logging.FileHandler(LOG_FILE, mode='w', encoding='utf-8')
-    # 设置文件日志的格式
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-    file_logger.addHandler(file_handler)  # 将处理器添加到记录器
+    file_logger.addHandler(file_handler)
 
 # --- AI 提示词模板 ---
-# 这是一个经过多轮优化的提示词，旨在引导 AI 更高效、更准确地找到企业邮箱
 PROMPT_TEMPLATE = (
     "你是一名顶尖的企业信息调查员，专注于查找香港地区公司的联系方式。你的任务是基于我提供的公司名称，通过联网搜索，不惜一切代价找到该公司的官方联系邮箱。\n\n"
     "--- 公司信息 ---\n"
@@ -61,62 +59,71 @@ PROMPT_TEMPLATE = (
 
 def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
     """
-    调用 gemini-cli 来获取指定公司的邮箱地址。
-
+    调用 gemini-cli 获取邮箱地址。
+    
     Args:
-        company_name_en (str): 公司的英文名称。
-        company_name_tc (str): 公司的中文名称。
+        company_name_en (str): 公司的英文名称
+        company_name_tc (str): 公司的中文名称
 
     Returns:
-        str: 返回获取到的邮箱地址，或 "Not Found"，或错误信息。
+        str: 邮箱地址或错误信息
+
+    Raises:
+        QuotaExceededError: 当API配额用尽时抛出
     """
-    # 将公司名称填入提示词模板
     prompt = PROMPT_TEMPLATE.format(company_name=company_name_en, company_name_tc=company_name_tc)
-    # 构建要执行的命令列表，强制使用指定的模型
     command = ['gemini', '-m', GEMINI_MODEL]
+    
     try:
-        # 执行外部命令。使用 input 参数通过 stdin 传递 prompt，避免特殊字符问题。
         result = subprocess.run(
             command,
-            capture_output=True,  # 捕获标准输出和标准错误
-            text=True,  # 以文本模式处理输出
-            check=True,  # 如果命令返回非零退出码，则抛出异常
-            encoding='utf-8',  # 指定编码
-            input=prompt  # 将 prompt 作为标准输入
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8',
+            input=prompt
         )
-        # 清理和解析返回结果，通常有效信息在最后一行
         lines = result.stdout.strip().split('\n')
         return lines[-1].strip() if lines else "Error: No output"
     except subprocess.CalledProcessError as e:
-        # 如果 gemini-cli 返回错误，则记录到控制台
+        # 检测配额错误
+        if "Quota exceeded" in e.stderr or "RESOURCE_EXHAUSTED" in e.stderr:
+            raise QuotaExceededError("API配额已用尽") from e
+            
         console_logger.error(f"Gemini Error: {e.stderr.strip()}")
         return "Error: Gemini call failed"
     except FileNotFoundError:
-        # 如果系统找不到 gemini 命令，则记录错误并退出
         console_logger.error("'gemini' 命令未找到。请确保 gemini-cli 已安装并位于系统的 PATH 中。")
         sys.exit(1)
 
 def main():
-    """
-    脚本的主执行函数，负责整个业务流程的调度。
-    """
+    """主函数，处理整个流程"""
     console_logger.info("--- 开始处理 ---")
-    # 初始化计数器
-    not_found_count = 0
-    success_count = 0
+    df = None  # 显式初始化变量
     
     try:
-        # 使用 pandas 读取 Excel 文件
+        # 读取Excel文件
         df = pd.read_excel(EXCEL_FILE, sheet_name=SHEET_NAME, engine='openpyxl')
         total_count = len(df)
         console_logger.info(f"成功读取文件 '{EXCEL_FILE}', 找到 {total_count} 条记录。")
 
-        # 如果用于存放邮箱的列不存在，则创建一个空列
+        # 初始化Email列
         if EMAIL_COL not in df.columns:
-            df[EMAIL_COL] = ""
+            df[EMAIL_COL] = ''
 
-        # --- 手动重置文件日志处理器 ---
-        # 确保每次运行都生成一个全新的日志文件
+        # --- 交互式菜单 ---
+        has_progress = df[EMAIL_COL].notna().any() and (df[EMAIL_COL] != '').any()
+        if has_progress:
+            print("\n检测到已有处理进度:")
+            print("1. 继续上次任务")
+            print("2. 重新开始（清空所有结果）")
+            choice = input("请选择操作 (默认1): ").strip() or "1"
+            
+            if choice == "2":
+                df[EMAIL_COL] = ''
+                console_logger.info("已清空所有结果，重新开始处理。")
+
+        # 重置文件日志
         if file_logger.hasHandlers():
             for handler in file_logger.handlers[:]:
                 handler.close()
@@ -125,46 +132,60 @@ def main():
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
         file_logger.addHandler(file_handler)
 
-        # 遍历 Excel 中的每一行
+        # 处理数据
+        not_found_count = 0
+        success_count = 0
+        
         for index in df.index:
-            # 实现断点续传：如果该行已经有邮箱，则跳过
+            # 跳过已处理的记录
             if pd.notna(df.at[index, EMAIL_COL]) and df.at[index, EMAIL_COL] != '':
                 continue
 
-            # 获取英文和中文公司名，处理空值情况
             company_en = str(df.at[index, COMPANY_NAME_EN_COL]) if COMPANY_NAME_EN_COL in df.columns and pd.notna(df.at[index, COMPANY_NAME_EN_COL]) else ''
             company_tc = str(df.at[index, COMPANY_NAME_TC_COL]) if COMPANY_NAME_TC_COL in df.columns and pd.notna(df.at[index, COMPANY_NAME_TC_COL]) else ''
             
-            # 如果两个名称都为空，则跳过
             current_company = company_en or company_tc
             if not current_company:
                 console_logger.info(f"[{index + 1}/{total_count}] 跳过空行...")
                 continue
 
-            # 在控制台打印当前进度
             console_logger.info(f"[{index + 1}/{total_count}] 正在处理: {current_company}")
-            # 调用函数获取邮箱
-            email = get_email_from_gemini(company_en, company_tc)
-            console_logger.info(f"-> 结果: {email}")
-
-            # 将获取到的结果写入 DataFrame
+            
+            try:
+                email = get_email_from_gemini(company_en, company_tc)
+            except QuotaExceededError as e:
+                console_logger.error(f"错误：API每日配额已用尽！将在 {RETRY_INTERVAL_MINUTES} 分钟后重试...")
+                console_logger.error("您可以：")
+                console_logger.error("1. 等待自动重试")
+                console_logger.error("2. 手动中断程序（Ctrl+C）并稍后重新运行")
+                
+                # 自动重试逻辑
+                while True:
+                    time.sleep(RETRY_INTERVAL_MINUTES * 60)
+                    console_logger.info(f"重试中... ({RETRY_INTERVAL_MINUTES}分钟间隔)")
+                    try:
+                        email = get_email_from_gemini(company_en, company_tc)
+                        console_logger.info("配额已恢复，继续处理！")
+                        break
+                    except QuotaExceededError:
+                        console_logger.error(f"配额仍未恢复，{RETRY_INTERVAL_MINUTES}分钟后再次重试...")
+                        continue
+                
+            console_logger.info(f"  -> 结果: {email}")
             df.at[index, EMAIL_COL] = email
             
-            # 根据结果更新计数器，并记录到文件日志
             if email == "Not Found":
                 not_found_count += 1
                 file_logger.info(f"未找到邮箱: {current_company}")
             elif not email.startswith("Error:"):
                 success_count += 1
             
-            # 实时保存：每处理一条就保存一次 Excel 文件
+            # 实时保存结果
             df.to_excel(EXCEL_FILE, index=False, engine='openpyxl')
-            # 增加延迟，避免请求频率过高
             time.sleep(2)
 
+        # 最终报告
         console_logger.info("--- 全部处理完成！最终结果已在文件中。 ---")
-        
-        # --- 在文件日志中写入最终的汇总报告 ---
         file_logger.info("\n" + "="*50)
         file_logger.info("           处理结果汇总")
         file_logger.info("="*50)
@@ -172,17 +193,21 @@ def main():
         file_logger.info(f"  - 成功找到邮箱: {success_count} 家")
         file_logger.info(f"  - 未找到邮箱:   {not_found_count} 家")
         file_logger.info("="*50)
-        file_logger.info("未找到邮箱的公司列表见上方明细。")
 
     except FileNotFoundError:
-        # 处理文件找不到的异常
         console_logger.error(f"错误：文件 '{EXCEL_FILE}' 未找到。请确保文件在正确的路径下。")
         sys.exit(1)
+    except KeyboardInterrupt:
+        console_logger.info("\n用户中断操作，已保存当前进度。")
+        if df is not None:
+            df.to_excel(EXCEL_FILE, index=False, engine='openpyxl')
+        sys.exit(0)
     except Exception as e:
-        # 处理所有其他未知异常
         console_logger.error(f"发生未知错误: {e}")
+        if df is not None:
+            df.to_excel(EXCEL_FILE, index=False, engine='openpyxl')
+        else:
+            console_logger.error("错误发生时尚未加载数据文件")
 
-# 当该脚本被直接执行时，才调用 main() 函数
-# 如果该脚本被其他模块导入，则不执行 main()
 if __name__ == '__main__':
     main()
