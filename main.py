@@ -171,7 +171,15 @@ def main():
                 console_logger.info(f"[{index + 1}/{total_count}] 跳过空行...")
                 continue
 
-            console_logger.info(f"[{index + 1}/{total_count}] 正在处理: {current_company}")
+            display_name = ""
+            if company_en and company_tc:
+                display_name = f"{company_en} ({company_tc})"
+            elif company_en:
+                display_name = company_en
+            elif company_tc:
+                display_name = company_tc
+            
+            console_logger.info(f"[{index + 1}/{total_count}] 正在处理: {display_name}")
             
             try:
                 email = get_email_from_gemini(company_en, company_tc)
