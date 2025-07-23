@@ -24,6 +24,8 @@ EMAIL_COL = 'Email'
 LOG_FILE = 'not_found_log.log'
 GEMINI_MODEL = 'gemini-2.5-flash'
 RETRY_INTERVAL_MINUTES = 30  # 配额错误重试间隔（分钟）
+TASK_INTERVAL_SECONDS = 10    # 任务间隔时间（秒）
+GEMINI_TIMEOUT_SECONDS = 180  # Gemini调用超时时间（秒）
 
 # --- 日志配置 ---
 console_logger = logging.getLogger('console_logger')
@@ -81,7 +83,8 @@ def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
             text=True,
             check=True,
             encoding='utf-8',
-            input=prompt
+            input=prompt,
+            timeout=GEMINI_TIMEOUT_SECONDS  # 设置超时时间
         )
         lines = result.stdout.strip().split('\n')
         return lines[-1].strip() if lines else "Error: No output"
@@ -92,6 +95,9 @@ def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
             
         console_logger.error(f"Gemini Error: {e.stderr.strip()}")
         return "Error: Gemini call failed"
+    except subprocess.TimeoutExpired:
+        console_logger.error(f"Gemini调用超时（{GEMINI_TIMEOUT_SECONDS}秒），跳过该记录")
+        return "Error: Timeout"
     except FileNotFoundError:
         console_logger.error("'gemini' 命令未找到。请确保 gemini-cli 已安装并位于系统的 PATH 中。")
         sys.exit(1)
@@ -112,33 +118,49 @@ def main():
             df[EMAIL_COL] = ''
 
         # --- 交互式菜单 ---
-        has_progress = df[EMAIL_COL].notna().any() and (df[EMAIL_COL] != '').any()
+        # 检测有效进度（排除错误状态）
+        valid_progress_mask = df[EMAIL_COL].apply(lambda x: x not in ['', 'Error: No output', 'Error: Gemini call failed'])
+        has_progress = valid_progress_mask.any()
         if has_progress:
             print("\n检测到已有处理进度:")
-            print("1. 继续上次任务")
+            print("1. 继续上次任务（跳过已完成的记录）")
             print("2. 重新开始（清空所有结果）")
             choice = input("请选择操作 (默认1): ").strip() or "1"
             
             if choice == "2":
                 df[EMAIL_COL] = ''
                 console_logger.info("已清空所有结果，重新开始处理。")
+            else:
+                # 清除错误状态以便重试
+                error_mask = df[EMAIL_COL].isin(['Error: No output', 'Error: Gemini call failed'])
+                df.loc[error_mask, EMAIL_COL] = ''
+                console_logger.info("已重置错误状态记录，将继续处理")
 
         # 重置文件日志
-        if file_logger.hasHandlers():
-            for handler in file_logger.handlers[:]:
-                handler.close()
+        # 移除旧的文件处理器（如果有），确保日志文件不会重复写入
+        for handler in file_logger.handlers[:]:
+            if isinstance(handler, logging.FileHandler):
                 file_logger.removeHandler(handler)
-        file_handler = logging.FileHandler(LOG_FILE, mode='w', encoding='utf-8')
+
+        # 配置文件日志，以追加模式写入
+        file_handler = logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8')
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
         file_logger.addHandler(file_handler)
+
+        # 记录本次任务启动时间
+        start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        file_logger.info("\n" + "="*70)
+        file_logger.info(f"任务启动时间: {start_time}")
+        file_logger.info("="*70)
 
         # 处理数据
         not_found_count = 0
         success_count = 0
         
         for index in df.index:
-            # 跳过已处理的记录
-            if pd.notna(df.at[index, EMAIL_COL]) and df.at[index, EMAIL_COL] != '':
+            # 跳过已处理的记录（仅当有有效结果时跳过）
+            current_email = df.at[index, EMAIL_COL]
+            if pd.notna(current_email) and current_email not in ['', 'Error: No output', 'Error: Gemini call failed']:
                 continue
 
             company_en = str(df.at[index, COMPANY_NAME_EN_COL]) if COMPANY_NAME_EN_COL in df.columns and pd.notna(df.at[index, COMPANY_NAME_EN_COL]) else ''
@@ -172,27 +194,33 @@ def main():
                         continue
                 
             console_logger.info(f"  -> 结果: {email}")
-            df.at[index, EMAIL_COL] = email
+            if email.startswith("Error:"):
+                console_logger.warning("发生API调用错误，跳过该记录")
+            else:
+                df.at[index, EMAIL_COL] = email
             
             if email == "Not Found":
                 not_found_count += 1
                 file_logger.info(f"未找到邮箱: {current_company}")
-            elif not email.startswith("Error:"):
+            elif not email.startswith("Error:") and email != "Error: Timeout":
                 success_count += 1
             
             # 实时保存结果
             df.to_excel(EXCEL_FILE, index=False, engine='openpyxl')
-            time.sleep(2)
+            time.sleep(TASK_INTERVAL_SECONDS)
 
         # 最终报告
         console_logger.info("--- 全部处理完成！最终结果已在文件中。 ---")
-        file_logger.info("\n" + "="*50)
-        file_logger.info("           处理结果汇总")
-        file_logger.info("="*50)
-        file_logger.info(f"总共处理公司数: {success_count + not_found_count}")
+        
+        end_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        file_logger.info("\n" + "="*70)
+        file_logger.info("           本次任务处理结果汇总")
+        file_logger.info("="*70)
+        file_logger.info(f"任务结束时间: {end_time}")
+        file_logger.info(f"总共处理记录数: {total_count}") # 使用total_count表示本次处理了多少行，无论是否跳过
         file_logger.info(f"  - 成功找到邮箱: {success_count} 家")
         file_logger.info(f"  - 未找到邮箱:   {not_found_count} 家")
-        file_logger.info("="*50)
+        file_logger.info("="*70)
 
     except FileNotFoundError:
         console_logger.error(f"错误：文件 '{EXCEL_FILE}' 未找到。请确保文件在正确的路径下。")
