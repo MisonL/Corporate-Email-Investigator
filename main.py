@@ -25,7 +25,7 @@ LOG_FILE = 'not_found_log.log'
 GEMINI_MODEL = 'gemini-2.5-flash'
 RETRY_INTERVAL_MINUTES = 30  # 配额错误重试间隔（分钟）
 TASK_INTERVAL_SECONDS = 10    # 任务间隔时间（秒）
-GEMINI_TIMEOUT_SECONDS = 180  # Gemini调用超时时间（秒）
+GEMINI_TIMEOUT_SECONDS = 3600  # Gemini调用超时时间（秒）
 
 # --- 日志配置 ---
 console_logger = logging.getLogger('console_logger')
@@ -105,6 +105,25 @@ def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
 def main():
     """主函数，处理整个流程"""
     console_logger.info("--- 开始处理 ---")
+    
+    # 打印当前配置信息
+    config_info = {
+        "Excel 文件": EXCEL_FILE,
+        "工作表名称": SHEET_NAME,
+        "公司英文名列": COMPANY_NAME_EN_COL,
+        "公司中文名列": COMPANY_NAME_TC_COL,
+        "邮箱结果列": EMAIL_COL,
+        "日志文件": LOG_FILE,
+        "Gemini 模型": GEMINI_MODEL,
+        "配额重试间隔 (分钟)": RETRY_INTERVAL_MINUTES,
+        "任务间隔 (秒)": TASK_INTERVAL_SECONDS,
+        "Gemini 调用超时 (秒)": GEMINI_TIMEOUT_SECONDS,
+    }
+    console_logger.info("\n--- 当前配置 ---")
+    for key, value in config_info.items():
+        console_logger.info(f"- {key}: {value}")
+    console_logger.info("----------------\n")
+
     df = None  # 显式初始化变量
     
     try:
