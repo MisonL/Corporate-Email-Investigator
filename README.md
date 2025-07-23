@@ -1,13 +1,11 @@
-<p align="center">
+<div align="center">
   <h1>企业邮箱批量获取工具</h1>
-</p>
-
-<p align="center">
   <!-- Badges will go here -->
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white">
   <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg">
+  <img alt="Powered by Google Gemini" src="https://img.shields.io/badge/Powered%20by-Google%20Gemini-purple?logo=google&logoColor=white">
   <!-- Add more badges as needed, e.g., GitHub Actions status -->
-</p>
+</div>
 
 这是一个使用 Python 编写的自动化脚本，旨在通过调用 `gemini-cli` 命令行工具，批量查询 Excel 文件中指定公司的官方联系邮箱，并将结果写回原文件。
 

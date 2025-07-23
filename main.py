@@ -26,6 +26,8 @@ GEMINI_MODEL = 'gemini-2.5-flash'
 RETRY_INTERVAL_MINUTES = 30  # 配额错误重试间隔（分钟）
 TASK_INTERVAL_SECONDS = 10    # 任务间隔时间（秒）
 GEMINI_TIMEOUT_SECONDS = 3600  # Gemini调用超时时间（秒）
+MAX_API_CALL_RETRIES = 3     # API调用（非配额）最大重试次数
+API_RETRY_DELAY_SECONDS = 5  # API调用重试间隔（秒）
 
 # --- 日志配置 ---
 console_logger = logging.getLogger('console_logger')
@@ -76,31 +78,48 @@ def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
     prompt = PROMPT_TEMPLATE.format(company_name=company_name_en, company_name_tc=company_name_tc)
     command = ['gemini', '-m', GEMINI_MODEL]
     
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=True,
-            encoding='utf-8',
-            input=prompt,
-            timeout=GEMINI_TIMEOUT_SECONDS  # 设置超时时间
-        )
-        lines = result.stdout.strip().split('\n')
-        return lines[-1].strip() if lines else "Error: No output"
-    except subprocess.CalledProcessError as e:
-        # 检测配额错误
-        if "Quota exceeded" in e.stderr or "RESOURCE_EXHAUSTED" in e.stderr:
-            raise QuotaExceededError("API配额已用尽") from e
+    for attempt in range(MAX_API_CALL_RETRIES):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding='utf-8',
+                input=prompt,
+                timeout=GEMINI_TIMEOUT_SECONDS  # 设置超时时间
+            )
+            lines = result.stdout.strip().split('\n')
+            return lines[-1].strip() if lines else "Error: No output"
+        except subprocess.CalledProcessError as e:
+            # 检测配额错误
+            if "Quota exceeded" in e.stderr or "RESOURCE_EXHAUSTED" in e.stderr:
+                raise QuotaExceededError("API配额已用尽") from e
             
-        console_logger.error(f"Gemini Error: {e.stderr.strip()}")
-        return "Error: Gemini call failed"
-    except subprocess.TimeoutExpired:
-        console_logger.error(f"Gemini调用超时（{GEMINI_TIMEOUT_SECONDS}秒），跳过该记录")
-        return "Error: Timeout"
-    except FileNotFoundError:
-        console_logger.error("'gemini' 命令未找到。请确保 gemini-cli 已安装并位于系统的 PATH 中。")
-        sys.exit(1)
+            # 检测其他API错误，进行重试
+            if "Gemini Error" in e.stderr or "Error 502" in e.stderr: # 捕获502错误
+                console_logger.warning(f"API调用错误 (尝试 {attempt + 1}/{MAX_API_CALL_RETRIES}): {e.stderr.strip()}")
+                if attempt < MAX_API_CALL_RETRIES - 1:
+                    time.sleep(API_RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    console_logger.error(f"Gemini Error: 达到最大重试次数，跳过该记录。原始错误: {e.stderr.strip()}")
+                    return "Error: Gemini call failed"
+            else:
+                console_logger.error(f"Gemini Error: {e.stderr.strip()}")
+                return "Error: Gemini call failed"
+        except subprocess.TimeoutExpired:
+            console_logger.warning(f"Gemini调用超时 (尝试 {attempt + 1}/{MAX_API_CALL_RETRIES})")
+            if attempt < MAX_API_CALL_RETRIES - 1:
+                time.sleep(API_RETRY_DELAY_SECONDS)
+                continue
+            else:
+                console_logger.error(f"Gemini调用超时（{GEMINI_TIMEOUT_SECONDS}秒），达到最大重试次数，跳过该记录")
+                return "Error: Timeout"
+        except FileNotFoundError:
+            console_logger.error("'gemini' 命令未找到。请确保 gemini-cli 已安装并位于系统的 PATH 中。")
+            sys.exit(1)
+    return "Error: Unknown error after retries" # 理论上不会执行到这里，但作为兜底
 
 def main():
     """主函数，处理整个流程"""
@@ -222,14 +241,18 @@ def main():
                 
             console_logger.info(f"  -> 结果: {email}")
             if email.startswith("Error:"):
-                console_logger.warning("发生API调用错误，跳过该记录")
+                # 区分API调用错误和超时错误
+                if "Error: Timeout" in email:
+                    console_logger.warning("API调用超时，跳过该记录")
+                else:
+                    console_logger.warning("发生API调用错误，跳过该记录")
             else:
                 df.at[index, EMAIL_COL] = email
             
             if email == "Not Found":
                 not_found_count += 1
                 file_logger.info(f"未找到邮箱: {current_company}")
-            elif not email.startswith("Error:") and email != "Error: Timeout":
+            elif not email.startswith("Error:"): # 仅当不是错误结果时才计入成功
                 success_count += 1
             
             # 实时保存结果
