@@ -155,24 +155,36 @@ def main():
         if EMAIL_COL not in df.columns:
             df[EMAIL_COL] = ''
 
+        # --- 统计当前文件状态 ---
+        initial_processed_success_count = df[df[EMAIL_COL].apply(lambda x: pd.notna(x) and x not in ['', 'Error: No output', 'Error: Gemini call failed', 'Not Found'])].shape[0]
+        initial_not_found_count = df[df[EMAIL_COL] == 'Not Found'].shape[0]
+        initial_unprocessed_count = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].shape[0]
+
+        console_logger.info("\n--- 当前数据文件状态 ---")
+        console_logger.info(f"  - 已处理成功: {initial_processed_success_count} 家")
+        console_logger.info(f"  - 处理失败 (Not Found): {initial_not_found_count} 家")
+        console_logger.info(f"  - 未处理 (空白或错误): {initial_unprocessed_count} 家")
+        console_logger.info(f"  - 总计记录数: {total_count} 家")
+        console_logger.info("------------------------\n")
+
         # --- 交互式菜单 ---
-        # 检测有效进度（排除错误状态）
-        valid_progress_mask = df[EMAIL_COL].apply(lambda x: x not in ['', 'Error: No output', 'Error: Gemini call failed'])
-        has_progress = valid_progress_mask.any()
-        if has_progress:
+        if initial_processed_success_count > 0 or initial_not_found_count > 0: # 只要有任何处理进度就显示菜单
             print("\n检测到已有处理进度:")
-            print("1. 继续上次任务（跳过已完成的记录）")
+            print("1. 继续上次任务（跳过已完成的记录，重试失败的记录）")
             print("2. 重新开始（清空所有结果）")
             choice = input("请选择操作 (默认1): ").strip() or "1"
             
             if choice == "2":
                 df[EMAIL_COL] = ''
                 console_logger.info("已清空所有结果，重新开始处理。")
+                initial_unprocessed_count = total_count # 重新开始，所有都变为未处理
             else:
-                # 清除错误状态以便重试
+                # 重置错误状态以便重试，同时统计本次要处理的数量
                 error_mask = df[EMAIL_COL].isin(['Error: No output', 'Error: Gemini call failed'])
                 df.loc[error_mask, EMAIL_COL] = ''
-                console_logger.info("已重置错误状态记录，将继续处理")
+                console_logger.info("已重置错误状态记录，将继续处理。")
+                # 重新计算本次要处理的数量
+                initial_unprocessed_count = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].shape[0]
 
         # 重置文件日志
         # 移除旧的文件处理器（如果有），确保日志文件不会重复写入
@@ -195,18 +207,19 @@ def main():
         not_found_count = 0
         success_count = 0
         
-        for index in df.index:
-            # 跳过已处理的记录（仅当有有效结果时跳过）
-            current_email = df.at[index, EMAIL_COL]
-            if pd.notna(current_email) and current_email not in ['', 'Error: No output', 'Error: Gemini call failed']:
-                continue
+        tasks_to_process_indices = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].index.tolist()
+        current_task_number = 0
+        total_tasks_for_run = len(tasks_to_process_indices)
+
+        for index in tasks_to_process_indices: # 修改循环迭代对象
+            current_task_number += 1
 
             company_en = str(df.at[index, COMPANY_NAME_EN_COL]) if COMPANY_NAME_EN_COL in df.columns and pd.notna(df.at[index, COMPANY_NAME_EN_COL]) else ''
             company_tc = str(df.at[index, COMPANY_NAME_TC_COL]) if COMPANY_NAME_TC_COL in df.columns and pd.notna(df.at[index, COMPANY_NAME_TC_COL]) else ''
             
             current_company = company_en or company_tc
             if not current_company:
-                console_logger.info(f"[{index + 1}/{total_count}] 跳过空行...")
+                console_logger.info(f"[{current_task_number}/{total_tasks_for_run}] 跳过空行...")
                 continue
 
             display_name = ""
@@ -217,7 +230,7 @@ def main():
             elif company_tc:
                 display_name = company_tc
             
-            console_logger.info(f"[{index + 1}/{total_count}] 正在处理: {display_name}")
+            console_logger.info(f"[{current_task_number}/{total_tasks_for_run}] 正在处理: {display_name}")
             
             try:
                 email = get_email_from_gemini(company_en, company_tc)
