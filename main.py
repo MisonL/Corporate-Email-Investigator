@@ -144,6 +144,9 @@ def main():
     console_logger.info("----------------\n")
 
     df = None  # 显式初始化变量
+    tasks_to_process_indices = [] # 初始化任务列表
+    current_task_number = 0       # 初始化当前任务计数
+    total_tasks_for_run = 0       # 初始化本次运行任务总数
     
     try:
         # 读取Excel文件
@@ -168,23 +171,36 @@ def main():
         console_logger.info("------------------------\n")
 
         # --- 交互式菜单 ---
+        tasks_to_process_indices = []
+        total_tasks_for_run = 0
+
         if initial_processed_success_count > 0 or initial_not_found_count > 0: # 只要有任何处理进度就显示菜单
             print("\n检测到已有处理进度:")
             print("1. 继续上次任务（跳过已完成的记录，重试失败的记录）")
             print("2. 重新开始（清空所有结果）")
+            print("3. 重试处理失败（Not Found）的记录")
             choice = input("请选择操作 (默认1): ").strip() or "1"
             
             if choice == "2":
                 df[EMAIL_COL] = ''
                 console_logger.info("已清空所有结果，重新开始处理。")
-                initial_unprocessed_count = total_count # 重新开始，所有都变为未处理
-            else:
+                tasks_to_process_indices = df.index.tolist()
+                total_tasks_for_run = len(tasks_to_process_indices)
+            elif choice == "3":
+                tasks_to_process_indices = df[df[EMAIL_COL] == 'Not Found'].index.tolist()
+                total_tasks_for_run = len(tasks_to_process_indices)
+                console_logger.info("将重试处理失败 (Not Found) 的记录。")
+            else: # 默认或选择1
                 # 重置错误状态以便重试，同时统计本次要处理的数量
                 error_mask = df[EMAIL_COL].isin(['Error: No output', 'Error: Gemini call failed'])
                 df.loc[error_mask, EMAIL_COL] = ''
                 console_logger.info("已重置错误状态记录，将继续处理。")
                 # 重新计算本次要处理的数量
-                initial_unprocessed_count = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].shape[0]
+                tasks_to_process_indices = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].index.tolist()
+                total_tasks_for_run = len(tasks_to_process_indices)
+        else: # 没有处理进度，直接处理所有未处理的
+            tasks_to_process_indices = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].index.tolist()
+            total_tasks_for_run = len(tasks_to_process_indices)
 
         # 重置文件日志
         # 移除旧的文件处理器（如果有），确保日志文件不会重复写入
@@ -206,10 +222,6 @@ def main():
         # 处理数据
         not_found_count = 0
         success_count = 0
-        
-        tasks_to_process_indices = df[df[EMAIL_COL].isin(['', 'Error: No output', 'Error: Gemini call failed']) | pd.isna(df[EMAIL_COL])].index.tolist()
-        current_task_number = 0
-        total_tasks_for_run = len(tasks_to_process_indices)
 
         for index in tasks_to_process_indices: # 修改循环迭代对象
             current_task_number += 1
