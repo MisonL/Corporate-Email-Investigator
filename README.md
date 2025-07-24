@@ -53,7 +53,7 @@ Tips：通过修改 AI 提示词可以转变成其他功能用途哦！
 
 ### **第一部分：安装与配置 `gemini-cli`**
 
-本工具依赖于 Google 的 `gemini-cli` 命令行程序。
+本工具依赖于 Google 的 `gemini-cli` 命令行程序。官方仓库：[`https://github.com/google-gemini/gemini-cli/tree/main`](https://github.com/google-gemini/gemini-cli/tree/main)
 
 #### 1. 前提条件：安装 Node.js
 
