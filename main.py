@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import logging
+import os
 
 # --- 自定义异常 ---
 class QuotaExceededError(Exception):
@@ -22,7 +23,7 @@ COMPANY_NAME_EN_COL = 'company_name'
 COMPANY_NAME_TC_COL = 'company_name_tc'
 EMAIL_COL = 'Email'
 LOG_FILE = 'not_found_log.log'
-GEMINI_MODEL = 'gemini-2.5-flash'
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash') # 从环境变量获取，默认为 'gemini-2.5-flash'
 RETRY_INTERVAL_MINUTES = 30  # 配额错误重试间隔（分钟）
 TASK_INTERVAL_SECONDS = 10    # 任务间隔时间（秒）
 GEMINI_TIMEOUT_SECONDS = 3600  # Gemini调用超时时间（秒）
