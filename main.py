@@ -172,13 +172,23 @@ def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
                 raise QuotaExceededError("API配额已用尽") from e
             
             # 检测其他API错误，进行重试
-            if "Gemini Error" in e.stderr or "Error 502" in e.stderr: # 捕获502错误
+            # 包括网络连接问题、Gemini错误和502错误
+            if ("Gemini Error" in e.stderr or
+                "Error 502" in e.stderr or
+                "Client network socket disconnected" in e.stderr or
+                "socket hang up" in e.stderr or
+                "ECONNRESET" in e.stderr or
+                "ETIMEDOUT" in e.stderr or
+                "Premature close" in e.stderr or
+                "API Error" in e.stderr):
                 if attempt < MAX_API_CALL_RETRIES - 1:
                     # 记录警告信息和重试计划
                     console_logger.warning(f"API调用错误 (尝试 {attempt + 1}/{MAX_API_CALL_RETRIES}): {e.stderr.strip()}")
                     console_logger.info(f"等待 {API_RETRY_DELAY_SECONDS} 秒后进行第 {attempt + 2} 次重试...")
                     # 显示等待动画
                     spinning_cursor(API_RETRY_DELAY_SECONDS, f"等待 {API_RETRY_DELAY_SECONDS} 秒后进行第 {attempt + 2} 次重试...")
+                    # 添加一个空行，避免动画被后续日志覆盖
+                    console_logger.info("")
                     continue
                 else:
                     # 达到最大重试次数，记录错误并返回
@@ -196,6 +206,8 @@ def get_email_from_gemini(company_name_en: str, company_name_tc: str) -> str:
                 console_logger.info(f"等待 {API_RETRY_DELAY_SECONDS} 秒后进行第 {attempt + 2} 次重试...")
                 # 显示等待动画
                 spinning_cursor(API_RETRY_DELAY_SECONDS, f"等待 {API_RETRY_DELAY_SECONDS} 秒后进行第 {attempt + 2} 次重试...")
+                # 添加一个空行，避免动画被后续日志覆盖
+                console_logger.info("")
                 continue
             else:
                 # 达到最大重试次数，记录超时错误并返回
@@ -380,6 +392,8 @@ def main():
                 while True:
                     # 显示等待动画
                     spinning_cursor(RETRY_INTERVAL_MINUTES * 60, f"配额错误等待中，等待 {RETRY_INTERVAL_MINUTES} 分钟...")
+                    # 添加一个空行，避免动画被后续日志覆盖
+                    console_logger.info("")
                     console_logger.info(f"重试中... ({RETRY_INTERVAL_MINUTES}分钟间隔)")
                     try:
                         # 重试获取邮箱
@@ -417,6 +431,8 @@ def main():
             df.to_excel(EXCEL_FILE, index=False, engine='openpyxl')
             # 显示任务间隔等待动画
             spinning_cursor(TASK_INTERVAL_SECONDS, f"任务间隔中，等待 {TASK_INTERVAL_SECONDS} 秒...")
+            # 添加一个空行，避免动画被后续日志覆盖
+            console_logger.info("")
 
         # 最终报告
         # 显示处理完成信息
